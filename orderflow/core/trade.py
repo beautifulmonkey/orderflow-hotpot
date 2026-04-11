@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
 from typing import Union
 
 SideLike = Union[int, str]
@@ -27,21 +26,13 @@ def normalize_side(side: SideLike) -> int:
     raise ValueError(f"Unsupported side value: {side}")
 
 
-def _quantize_price_to_tick(price: float, tick_size: float) -> int:
-    if tick_size <= 0:
-        raise ValueError("tick_size must be > 0")
-    ratio = Decimal(str(price)) / Decimal(str(tick_size))
-    # Use decimal rounding to avoid binary floating-point surprises.
-    return int(ratio.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-
 @dataclass(frozen=True)
 class Trade:
     """Lightweight, normalized trade event consumed by analyzers."""
 
     ts_ns: int
     side: int
-    price_tick: int
+    price: float
     size: float
 
     def __post_init__(self) -> None:
@@ -60,12 +51,11 @@ class Trade:
         side: SideLike,
         price: float,
         size: float,
-        tick_size: float,
     ) -> "Trade":
         """Build a normalized trade from raw values."""
         return cls(
             ts_ns=int(ts_ns),
             side=normalize_side(side),
-            price_tick=_quantize_price_to_tick(price=price, tick_size=tick_size),
+            price=float(price),
             size=float(size),
         )

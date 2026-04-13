@@ -74,13 +74,10 @@ class FootprintAnalyzer(BaseAnalyzer):
             )
             """
         )
-
-    @staticmethod
-    def _window_minutes(level: str | int) -> int:
-        mapping = {"1m": 1, "5m": 5, "15m": 15, 1: 1, 5: 5, 15: 15}
-        if level not in mapping:
-            raise ValueError("level must be one of: 1m, 5m, 15m, 1, 5, 15")
-        return mapping[level]
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_footprint_1m_minute_start_ns "
+            "ON footprint_1m(minute_start_ns)"
+        )
 
     def _minute_start_ns(self, ts_ns: int) -> int:
         utc_minute_ns = (ts_ns // MINUTE_NS) * MINUTE_NS
@@ -101,13 +98,6 @@ class FootprintAnalyzer(BaseAnalyzer):
         ):
             return self._open_minute_ns
         return self._minute_start_ns(ts_ns)
-
-    def _window_start_ns(self, minute_start_ns: int, window_minutes: int) -> int:
-        dt_utc = datetime.fromtimestamp(minute_start_ns // 1_000_000_000, tz=timezone.utc)
-        dt_local = dt_utc.astimezone(self._align_tz)
-        aligned = (dt_local.minute // window_minutes) * window_minutes
-        dt_local_window = dt_local.replace(minute=aligned, second=0, microsecond=0)
-        return int(dt_local_window.astimezone(timezone.utc).timestamp() * 1_000_000_000)
 
     def _trim_if_needed(self) -> None:
         if self._max_minutes is None:
@@ -169,88 +159,60 @@ class FootprintAnalyzer(BaseAnalyzer):
         for trade in trades:
             self.on_trade(trade)
 
-    def query_rows(self, *, level: str | int = "1m", start_ns: int | None = None, end_ns: int | None = None, count: int | None = None) -> dict[str, object]:
-        if count is not None and (start_ns is not None or end_ns is not None):
-            raise ValueError("Use either (start_ns + end_ns) or count, not both")
-        if count is None and (start_ns is None or end_ns is None):
-            raise ValueError("Provide either count, or both start_ns and end_ns")
-
-        wm = self._window_minutes(level)
-        window_ns = wm * MINUTE_NS
-        # minute_start_ns 已经是按业务时区对齐到分钟，因此这里可直接按窗口纳秒整除聚合。
-        window_expr = (
-            "minute_start_ns"
-            if wm == 1
-            else f"(minute_start_ns / {window_ns}) * {window_ns}"
-        )
-        if count is not None:
-            windows_filter = f"""
-                SELECT window_start_ns
-                FROM (
-                    SELECT {window_expr} AS window_start_ns
-                    FROM footprint_1m
-                    GROUP BY 1
-                    ORDER BY 1 DESC
-                    LIMIT ?
-                ) t
-            """
-            params = [int(count)]
-        else:
-            assert start_ns is not None and end_ns is not None
-            windows_filter = f"""
-                SELECT {window_expr} AS window_start_ns
-                FROM footprint_1m
-                GROUP BY 1
-                HAVING window_start_ns < ? AND (window_start_ns + ?) > ?
-            """
-            params = [int(end_ns), int(window_ns), int(start_ns)]
+    def query_rows(
+        self,
+        *,
+        start_ns: int | None = None,
+        end_ns: int | None = None,
+    ) -> dict[str, object]:
+        where_clause = ""
+        filter_params: list[int] = []
+        if start_ns and end_ns:
+            where_clause = "WHERE minute_start_ns >= ? AND minute_start_ns < ?"
+            filter_params = [start_ns, end_ns]
+        elif start_ns:
+            where_clause = "WHERE minute_start_ns >= ?"
+            filter_params = [start_ns]
+        elif end_ns:
+            where_clause = "WHERE minute_start_ns < ?"
+            filter_params = [end_ns]
 
         vals = self._con.execute(
             f"""
-            WITH windows AS (
-                {windows_filter}
+            WITH lvl AS (
+                SELECT
+                    minute_start_ns,
+                    price_tick,
+                    SUM(bid_volume) AS bid_volume,
+                    SUM(ask_volume) AS ask_volume,
+                    SUM(trade_count) AS trade_count,
+                    SUM(bid_count) AS bid_count,
+                    SUM(ask_count) AS ask_count
+                FROM footprint_1m
+                {where_clause}
+                GROUP BY 1, 2
             )
             SELECT
-                w.window_start_ns,
-                SUM(f.bid_volume) AS bid_volume,
-                SUM(f.ask_volume) AS ask_volume,
-                SUM(f.trade_count) AS trade_count,
-                SUM(f.bid_count) AS bid_count,
-                SUM(f.ask_count) AS ask_count
-            FROM footprint_1m f
-            INNER JOIN windows w
-                ON {window_expr} = w.window_start_ns
+                minute_start_ns,
+                list(
+                    struct_pack(
+                        price_tick := price_tick,
+                        price := price_tick * ?,
+                        bid_volume := bid_volume,
+                        ask_volume := ask_volume,
+                        trade_count := trade_count,
+                        bid_count := bid_count,
+                        ask_count := ask_count
+                    )
+                    ORDER BY price_tick
+                ) AS levels
+            FROM lvl
             GROUP BY 1
-            ORDER BY 1
+            ORDER BY 1;
             """,
-            params,
+            [*filter_params, self._tick_size],
         ).fetchall()
-
-        rows: list[dict[str, object]] = []
-        for ws, sum_bid, sum_ask, sum_trade, sum_bid_count, sum_ask_count in vals:
-            total = float(sum_ask) + float(sum_bid)
-            delta = float(sum_ask) - float(sum_bid)
-            rows.append(
-                {
-                    "timeframe": f"{wm}m",
-                    "window_start_ns": int(ws),
-                    "window_end_ns": int(ws) + window_ns,
-                    "window_label": "",
-                    "ts_ns": int(ws),
-                    "ts": datetime.fromtimestamp(int(ws) / 1_000_000_000, tz=timezone.utc).isoformat(),
-                    "price": None,
-                    "symbol": self._symbol,
-                    "bid_volume": float(sum_bid),
-                    "ask_volume": float(sum_ask),
-                    "total_volume": total,
-                    "delta": delta,
-                    "trade_count": int(sum_trade),
-                    "bid_count": int(sum_bid_count),
-                    "ask_count": int(sum_ask_count),
-                    "delta_percent": (delta / total) if total else None,
-                }
-            )
-        return {"timeframe": f"{wm}m", "window_minutes": wm, "window_count": len(rows), "row_count": len(rows), "rows": rows}
+        return {"timeframe": "1m", "minute_count": len(vals), "row_count": len(vals), "rows": vals}
 
     def snapshot(self) -> dict[str, object]:
         n = int(self._con.execute("SELECT COUNT(DISTINCT minute_start_ns) FROM footprint_1m").fetchone()[0])

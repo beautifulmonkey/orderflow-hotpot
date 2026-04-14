@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import duckdb
+import pandas as pd
 from orderflow.analyzers.base import BaseAnalyzer
 from orderflow.core.trade import BUY, Trade
 
@@ -118,6 +119,23 @@ class FootprintAnalyzer(BaseAnalyzer):
         self.cells.clear()
         self._con.execute("DELETE FROM footprint_levels")
         self._con.execute("DELETE FROM footprint_tf")
+
+    def query_levels(
+        self,
+        *,
+        start_ts: int = 0,
+        end_ts: int = 9_999_999_999,
+    ) -> pd.DataFrame:
+        res = self._con.execute(
+            f"""
+            SELECT ts, price, bid_volume, ask_volume, bid_count, ask_count
+            FROM footprint_levels
+            WHERE ts >= ? AND ts < ?
+            ORDER BY ts, price
+            """,
+            [int(start_ts), int(end_ts)],
+        )
+        return res.df()
 
     def snapshot(self) -> dict[str, object]:
         minute_count = int(

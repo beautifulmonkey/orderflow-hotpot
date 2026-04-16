@@ -128,19 +128,16 @@ class FootprintAnalyzer(BaseAnalyzer):
         self._con.execute("DELETE FROM footprint_levels")
         self._con.execute("DELETE FROM footprint_tf")
 
-    def query_levels(
-        self,
-        *,
-        start_ts: int = 0,
-        end_ts: int = 9_999_999_999,
-    ) -> pd.DataFrame:
+    def query_levels(self, start_ts: int = 0, end_ts: int = 9_999_999_999) -> pd.DataFrame:
         res = self._con.execute(
-            f"""
-            SELECT ts, price, bid_volume, ask_volume, bid_count, ask_count
-            FROM footprint_levels
-            WHERE ts >= ? AND ts < ?
-            ORDER BY ts, price
-            """,
+            f"""SELECT * FROM footprint_levels WHERE ts >= ? AND ts < ? ORDER BY ts, price""",
+            [int(start_ts), int(end_ts)],
+        )
+        return res.df()
+
+    def query_tf(self, start_ts: int = 0, end_ts: int = 9_999_999_999) -> pd.DataFrame:
+        res = self._con.execute(
+            f"""SELECT * FROM footprint_tf WHERE ts >= ? AND ts < ? ORDER BY ts""",
             [int(start_ts), int(end_ts)],
         )
         return res.df()

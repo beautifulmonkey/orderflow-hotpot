@@ -34,7 +34,9 @@ class FootprintAnalyzer(BaseAnalyzer):
                 trade_count INT,
                 bid_count INT,
                 ask_count INT,
-                level_count INT
+                level_count INT,
+                poc_volume DOUBLE,
+                poc_price DOUBLE
             )
             """
         )
@@ -89,11 +91,17 @@ class FootprintAnalyzer(BaseAnalyzer):
             return
         bid_volume_sum = ask_volume_sum = 0.0
         bid_count_sum = ask_count_sum = 0
+        poc_volume = None
+        poc_price = None
 
         params: list[int | float] = []
         for tick, cell in self.cells.items():
             bid_volume, ask_volume, bid_count, ask_count = cell
             price = float(tick) * self.tick_size
+            level_total_volume = float(bid_volume) + float(ask_volume)
+            if poc_volume is None or level_total_volume > poc_volume:
+                poc_volume = level_total_volume
+                poc_price = price
             params.extend((self.ts, price, bid_volume, ask_volume, bid_count, ask_count))
             bid_volume_sum += float(bid_volume)
             ask_volume_sum += float(ask_volume)
@@ -108,9 +116,9 @@ class FootprintAnalyzer(BaseAnalyzer):
         delta_percent = (delta / total_volume) if total_volume != 0 else None
         self._con.execute(
             """
-            INSERT INTO footprint_tf VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO footprint_tf VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [self.ts, self.timeframe_min, bid_volume_sum, ask_volume_sum, total_volume, delta, delta_percent, trade_count_sum, bid_count_sum, ask_count_sum, len(self.cells)],
+            [self.ts, self.timeframe_min, bid_volume_sum, ask_volume_sum, total_volume, delta, delta_percent, trade_count_sum, bid_count_sum, ask_count_sum, len(self.cells), poc_volume, poc_price],
         )
         self.cells.clear()
 

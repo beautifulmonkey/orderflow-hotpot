@@ -15,7 +15,7 @@ from orderflow.core.trade import Trade
 @dataclass
 class _GroupState:
     ts_ns: int
-    side: int | None
+    side: str | None
     total_size: float = 0.0
     count: int = 0
     min_price: float | None = None
@@ -57,11 +57,11 @@ class LargeOrderAnalyzer(BaseAnalyzer):
         self._threshold = float(threshold)
         self._group_by_side = bool(group_by_side)
 
-        self._active: dict[tuple[int, int | None], _GroupState] = {}
+        self._active: dict[tuple[int, str | None], _GroupState] = {}
         self._recent_events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._trades_processed = 0
 
-    def on_trade(self, trade: Trade) -> None:
+    def on_trade(self, trade: Trade):
         current_ts = trade.ts_ns
         self._finalize_older_groups(current_ts)
 
@@ -85,9 +85,10 @@ class LargeOrderAnalyzer(BaseAnalyzer):
 
         if (not state.threshold_emitted) and state.total_size >= self._threshold:
             state.threshold_emitted = True
-            self._recent_events.append(
-                self._state_to_event(state, event_type="threshold_crossed")
-            )
+            evn = self._state_to_event(state, event_type="threshold_crossed")
+            self._recent_events.append(evn)
+            return evn
+        return None
 
     def snapshot(self) -> dict[str, Any]:
         active_groups = []
@@ -112,7 +113,7 @@ class LargeOrderAnalyzer(BaseAnalyzer):
         self._finalize_older_groups(float("inf"))
         return list(self._recent_events)
 
-    def _build_group_key(self, trade: Trade) -> tuple[int, int | None]:
+    def _build_group_key(self, trade: Trade) -> tuple[int, str | None]:
         side_key = trade.side if self._group_by_side else None
         return (trade.ts_ns, side_key)
 

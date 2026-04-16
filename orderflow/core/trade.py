@@ -7,21 +7,22 @@ from typing import Union
 
 SideLike = Union[int, str]
 
-BUY = 1
-SELL = -1
+BUY = "buy"
+SELL = "sell"
 
-
-def normalize_side(side: SideLike) -> int:
-    """Normalize side input to encoded integer (buy=1, sell=-1)."""
+def normalize_side(side: SideLike) -> str:
+    """Normalize side input to canonical string ("buy" / "sell")."""
     if isinstance(side, int):
-        if side in (BUY, SELL):
-            return side
+        if side == 1:
+            return BUY
+        if side == -1:
+            return SELL
         raise ValueError(f"Unsupported integer side: {side}")
 
     normalized = side.strip().lower()
-    if normalized in {"buy", "b", "ask", "1", "+"}:
+    if normalized in {"buy", "buyer", "b", "ask", "1", "+"}:
         return BUY
-    if normalized in {"sell", "s", "bid", "-1", "-"}:
+    if normalized in {"sell", "seller", "s", "bid", "-1", "-"}:
         return SELL
     raise ValueError(f"Unsupported side value: {side}")
 
@@ -31,13 +32,13 @@ class Trade:
     """Lightweight, normalized trade event consumed by analyzers."""
 
     ts_ns: int
-    side: int
+    side: str
     price: float
     size: float
 
     def __post_init__(self) -> None:
         if self.side not in (BUY, SELL):
-            raise ValueError("side must be 1 (buy) or -1 (sell)")
+            raise ValueError("side must be 'buy' or 'sell'")
         if self.ts_ns < 0:
             raise ValueError("ts_ns must be >= 0")
         if self.size < 0:
